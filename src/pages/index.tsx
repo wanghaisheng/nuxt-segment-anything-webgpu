@@ -22,12 +22,29 @@ function sum(arr: number[]) {
   return arr.reduce((acc, x) => acc + x, 0)
 }
 
+function calculateBoundingBox(maskData: Uint8ClampedArray, width: number, height: number) {
+  let minX = width, minY = height, maxX = 0, maxY = 0;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = (y * width + x) * 4 + 3; // Alpha channel index
+      if (maskData[i] > 0) {
+        minX = Math.min(minX, x);
+        minY = Math.min(minY, y);
+        maxX = Math.max(maxX, x);
+        maxY = Math.max(maxY, y);
+      }
+    }
+  }
+  return { minX, minY, maxX, maxY };
+}
 
 export default defineComponent({
   setup(props) {
     const btnCutDisable = ref(true)
     const baseImage = ref("")
     const status = ref("")
+    const masksize = ref("")
+
     const refContainer = ref()
     const refMaskCanvas = ref()
     const lastPoints = ref<TPoint[]>([])
@@ -162,7 +179,11 @@ export default defineComponent({
             pixelData[offset + 3] = 255 // alpha
           }
         }
+        const { minX, minY, maxX, maxY } = calculateBoundingBox(pixelData, mask.width, mask.height);
+        const bbHeight = maxY - minY + 1;
+        const bbWidth = maxX - minX + 1;
 
+        masksize.value=`width:${bbWidth}-高:${bbHeight}`
         // Draw image data to context
         context.putImageData(imageData, 0, 0)
 
@@ -185,7 +206,7 @@ export default defineComponent({
     return () => (
       <ClientOnly>
         <UContainer>
-          <h1 class="text-3xl text-zinc-800 font-bold">Nuxt Segment Anything WebGPU</h1>
+          <h1 class="text-3xl text-zinc-800 font-bold">界面精灵自动切图工具</h1>
           <h3 class="text-2xl text-zinc-600">
             In-browser image segmentation via {" "}
             <a href="https://hf.co/docs/transformers.js" target="_blank" class="hover:text-primary-500">
@@ -286,6 +307,9 @@ export default defineComponent({
             }
           </div>
           <label id="status">{status.value}</label>
+          <br></br>
+          <label id="masksize">{masksize.value}</label>
+
           <div id="controls" class="mt-2 space-x-2">
             <UButton
               id="reset-image"
@@ -331,25 +355,33 @@ export default defineComponent({
                   imageContext!.drawImage(image, 0, 0, w, h)
                   const imagePixelData = imageContext!.getImageData(0, 0, w, h)
 
-                  // Create a new canvas to hold the cut-out
-                  const cutCanvas = new OffscreenCanvas(w, h)
-                  const cutContext = cutCanvas.getContext("2d")
-                  const cutPixelData = cutContext!.getImageData(0, 0, w, h)
+                  // Calculate the bounding box of the mask
+                  const { minX, minY, maxX, maxY } = calculateBoundingBox(maskPixelData.data, w, h);
+                  const bbWidth = maxX - minX + 1;
+                  const bbHeight = maxY - minY + 1;
 
-                  // Copy the image pixel data to the cut canvas
-                  for (let i = 3; i < maskPixelData.data.length; i += 4) {
-                    if (maskPixelData.data[i] > 0) {
-                      for (let j = 0; j < 4; ++j) {
-                        const offset = i - j
-                        cutPixelData.data[offset] = imagePixelData.data[offset]
+                  // Create a new canvas to hold the cut-out
+                  const cutCanvas = new OffscreenCanvas(bbWidth, bbHeight);
+                  const cutContext = cutCanvas.getContext("2d");
+                  const cutPixelData = cutContext!.createImageData(bbWidth, bbHeight);
+
+                  // Copy the image pixel data to the cut canvas, using the bounding box
+                  for (let y = minY; y <= maxY; y++) {
+                    for (let x = minX; x <= maxX; x++) {
+                      const srcIndex = (y * w + x) * 4;
+                      const destIndex = ((y - minY) * bbWidth + (x - minX)) * 4;
+                      if (maskPixelData.data[srcIndex + 3] > 0) {
+                        for (let j = 0; j < 4; j++) {
+                          cutPixelData.data[destIndex + j] = imagePixelData.data[srcIndex + j];
+                        }
                       }
                     }
                   }
-                  cutContext!.putImageData(cutPixelData, 0, 0)
+                  cutContext!.putImageData(cutPixelData, 0, 0);
 
                   // Download image
                   const link = document.createElement("a")
-                  link.download = "image.png"
+                  link.download = `image_${bbWidth}x${bbHeight}.png`;
                   link.href = URL.createObjectURL(await cutCanvas.convertToBlob())
                   link.click()
                   link.remove()
